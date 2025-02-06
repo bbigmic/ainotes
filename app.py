@@ -220,7 +220,7 @@ def main():
         progress.progress(25)
         audio_path = convert_to_wav(file_path)
         
-        status_placeholder.text("Transcribing audio...")
+        status_placeholder.text("Transcribing audio... it may take up to several minutes")
         progress.progress(50)
         st.session_state.transcription = transcribe_audio(audio_path, language)
         st.text_area("Transcription", st.session_state.transcription, height=300)
