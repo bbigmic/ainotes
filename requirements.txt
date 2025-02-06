@@ -1,0 +1,8 @@
+streamlit
+openai
+yt-dlp
+pydub
+moviepy
+torch
+ffmpeg
+python-dotenv
