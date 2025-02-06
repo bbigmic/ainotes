@@ -50,7 +50,8 @@ def is_valid_file(file_path):
         return False
 
 def download_video(url):
-    output_path = "downloaded_video.mp4"
+    temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    output_path = temp_video.name  # Ścieżka do pliku tymczasowego
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': output_path,
@@ -65,22 +66,28 @@ def download_video(url):
 
 def convert_to_wav(file_path):
     print(f"Converting file: {file_path}")
-    
-    # Używamy pliku tymczasowego
-    temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    
     file_ext = os.path.splitext(file_path)[1].lower()
-
+    
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"File {file_path} does not exist.")
+    
+    if not is_valid_file(file_path):
+        raise ValueError(f"File {file_path}  is corrupted or unsupported.")
+    
     if file_ext in SUPPORTED_AUDIO:
         audio = AudioSegment.from_file(file_path)
-        audio.export(temp_wav.name, format="wav")
+        output_path = os.path.join(tempfile.gettempdir(), "converted_audio.wav")
+        audio.export(output_path, format="wav")
+        return output_path
     elif file_ext in SUPPORTED_VIDEO:
-        from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_audio
-        ffmpeg_extract_audio(file_path, temp_wav.name)
+        output_path = "extracted_audio.wav"
+        try:
+            ffmpeg_extract_audio(file_path, output_path)
+        except Exception as e:
+            raise ValueError(f"Failed to extract audio: {e}")
+        return output_path
     else:
         raise ValueError(f"Unsupported file format: {file_ext}")
-
-    return temp_wav.name  # Zwracamy ścieżkę do pliku tymczasowego
 
 def transcribe_audio(audio_path, language):
     print("Transcribing audio...")
@@ -172,8 +179,8 @@ def analyze_with_custom_prompt(transcription, original_notes, custom_prompt):
 
 # Funkcja do zapisywania transkrypcji i notatek w jednym pliku (tworzymy raz)
 def save_transcription_and_notes(transcription, notes):
-    filename = f"meeting_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    file_path = os.path.join(tempfile.gettempdir(), filename)
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    file_path = temp_file.name  # Ścieżka do pliku tymczasowego
     
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("📌 **Transcription:**\n")
@@ -187,8 +194,8 @@ def save_transcription_and_notes(transcription, notes):
 
 def main():
     st.title("Audio/Video Transcription and Note Generation")
-
-    # Inicjalizacja sesji
+    
+    # Session variables for new prompts
     if "transcription" not in st.session_state:
         st.session_state.transcription = None
     if "notes" not in st.session_state:
@@ -200,59 +207,48 @@ def main():
     video_url = st.text_input("Paste YouTube or Instagram link")
     uploaded_file = st.file_uploader("Select an audio or video file", type=list(SUPPORTED_AUDIO) + list(SUPPORTED_VIDEO))
 
-    file_path = None
-
-    # Pobieranie pliku z YouTube lub upload
     if video_url:
         st.info("Processing video...")
-        try:
-            file_path = download_video(video_url)
-        except Exception as e:
-            st.error(f"Error downloading video: {e}")
-            return
+        file_path = download_video(video_url)
     elif uploaded_file:
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
             temp_file.write(uploaded_file.read())
             file_path = temp_file.name
     else:
         return
-
-    # Sprawdzenie rozmiaru pliku
+    
     if os.path.getsize(file_path) > MAX_FILE_SIZE_MB * 1024 * 1024:
         st.error("The file is too large! The maximum size is 500 MB.")
         os.remove(file_path)
         return
-
+    
     progress = st.progress(0)
     status_placeholder = st.empty()
-
     try:
-        # Konwersja do WAV
         status_placeholder.text("Converting file to WAV format...")
         progress.progress(25)
         audio_path = convert_to_wav(file_path)
-
-        # Transkrypcja
-        status_placeholder.text("Transcribing audio... it may take up to several minutes")
+        
+        status_placeholder.text("Transcribing audio... it can take a few minutes.")
         progress.progress(50)
         st.session_state.transcription = transcribe_audio(audio_path, language)
         st.text_area("Transcription", st.session_state.transcription, height=300)
-
-        # Analiza kluczowych informacji
+        
         status_placeholder.text("Analyzing key conversation points...")
         progress.progress(75)
         st.session_state.notes = analyze_transcription(st.session_state.transcription, language)
         st.text_area("Notes", st.session_state.notes, height=300)
-
+        
         status_placeholder.text("Saving transcription and notes...")
         progress.progress(100)
 
-        # Generowanie pliku do pobrania
+        # Check if the file already exists; if not, save it
         if "summary_file" not in st.session_state:
             st.session_state.summary_file = save_transcription_and_notes(
                 st.session_state.transcription, st.session_state.notes
             )
 
+        # Provide a download button but do NOT regenerate the file!
         with open(st.session_state.summary_file, "rb") as file:
             st.download_button(
                 "📥 Download Transcription and Notes",
@@ -263,38 +259,44 @@ def main():
 
         status_placeholder.success("Task successfully completed! ✅")
 
-        # Obsługa niestandardowego promptu
+        # Custom prompt section
         st.header("Customize the Prompt and Generate New Notes")
         custom_prompt = st.text_area("Enter a custom prompt", height=150)
-
+        
         if st.button("Generate Notes Based on Custom Prompt"):
             if custom_prompt.strip():
-                progress.progress(85)
+                progress.progress(0)
                 status_placeholder.text("Generating notes with custom prompt...")
+                progress.progress(85)
+                
                 st.session_state.custom_notes = analyze_with_custom_prompt(
                     st.session_state.transcription,
                     st.session_state.notes,
                     custom_prompt
                 )
+
                 progress.progress(100)
                 status_placeholder.success("New notes have been generated! ✅")
             else:
                 st.error("Please enter a custom prompt!")
 
-        # Wyświetlanie nowych notatek
+        # New section for displaying notes generated with the custom prompt
         if st.session_state.custom_notes:
             st.header("New Notes Based on Custom Prompt")
             st.text_area("New Notes", st.session_state.custom_notes, height=300)
-
+        
     except Exception as e:
         status_placeholder.error(f"Error: {e}")
-    
     finally:
-        # Sprzątanie plików tymczasowych
+        # Usuwanie plików tymczasowych po zakończeniu przetwarzania
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
-        if audio_path and os.path.exists(audio_path):
+        
+        if "audio_path" in locals() and audio_path and os.path.exists(audio_path):
             os.remove(audio_path)
+        
+        if "summary_file" in st.session_state and os.path.exists(st.session_state.summary_file):
+            os.remove(st.session_state.summary_file)
 
         progress.empty()
 
